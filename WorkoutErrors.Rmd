@@ -1,0 +1,143 @@
+---
+title: "Identify Workout Errors"
+author: "Max Guthier"
+date: "December 26, 2015"
+---
+
+##Summary
+In this project, machine learning algorithms are used to differentiate between various ways to perform the same exercise (barbell lifts) with data from accelerometers on body and dumbbells. Random Forest prediction with the original variables is evaluated to be the best prediction algorithm as it identifies the performance type in the sample with perfect accuracy and has the best estimated accuracy for performancy type identification in a new sample (out of sample error 0.4%). 
+
+###Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+###Data Source
+A group of 6 participants has been asked to perform barbell lifts in various ways - correctly; and incorrectly in four different ways - with accelerometers on belt, forearm, arm and dumbbell. Data has been graciously provided by this source: http://groupware.les.inf.puc-rio.br/har. 
+
+###Scope
+The goal of the project is to identify the way how the exercise was performed in each repetition. As the purpose of the algorithm is to provide automated feedback for exercisers going forward, the best algorithm is the one with highest estimated out of sample accuracy.
+
+##Algorithm Selection
+
+##Load required R packages
+
+```{r,message=FALSE}
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(gbm)
+library(plyr)
+library(MASS)
+library(lme4)
+library(arm)
+library(caTools)
+library(parallel)
+```
+
+###Load Data
+
+```{r}
+training<-read.csv('pml-training.csv',na.strings = c("NA","#DIV/0!", ""))
+testing<-read.csv('pml-testing.csv',na.strings = c("NA","#DIV/0!", ""))
+set.seed(151226)
+```
+
+### Check distribution of exercise performance types
+
+```{r}
+qplot(training$classe, geom="histogram")
+```
+
+###Identify columns with valid predictors
+
+This segment discards columns with insufficient data (less than 95%) or categorical demographic data that is irrelevant for the actual prediction. Participant ID, however, is retained as a factor as it is necessary to evaluate differences within each individual participant's posture.
+
+```{r}
+countMissing <- function(mycol) {
+  return (sum(is.na(training[, mycol]))/ nrow(training))
+}
+countNAs <- data.frame(countNA=sapply(colnames(training), countMissing))
+colsToDeleteNA <- countNAs$countNA > 0.95
+training <- training[, !colsToDeleteNA]
+training <- training[,-(1:7)]
+```
+
+###Define "Run Algorithm" functions
+Three machine learning paradigms - Random Forest, Stochastic Gradient Boosted, Boosted Logistic Regression - are tried, using either the original (centered and scaled) variables, or their principal components as input. To ensure synchronicity, custom functions are defined for the execution of each machine learning paradigm with or without PCA preprocessing.
+
+```{r}
+myMethods <- c("rf", "gbm", "LogitBoost")
+trc_cv = trainControl(method="cv")
+# center and scale for better performance on some methods
+runModel <- function(mxpar) {
+  return (train(classe ~ ., data=training, method=mxpar, preProcess=c("center", "scale"), trControl=trc_cv, verbose=FALSE))
+}
+
+runModelPCA <- function(mxpar) {
+  return (train(classe ~ ., data=training, method=mxpar, preProcess=c("center", "scale","pca"), trControl=trc_cv, verbose=FALSE))
+}
+```
+
+###Create Output Matrix
+
+```{r}
+models <- list()
+modelLabel <- list()
+modelAccuracy <- list()
+modelKappa <- list()
+```
+
+###Loop through the list of algorithms and apply each to the training sample
+
+```{r,warning=FALSE}
+mycount <- 0
+for (mx in myMethods) {
+  
+  mycount <- mycount+1
+  models[[mycount]] <- runModel(mx)
+  modelLabel[[mycount]] <- models[[mycount]]$modelInfo$label
+  modelAccuracy[[mycount]] <- max(models[[mycount]]$results$Accuracy)
+  modelKappa[[mycount]] <- max(max(models[[mycount]]$results$Kappa))
+  print(models[[mycount]])
+  
+  mycount <- mycount+1
+  models[[mycount]] <- runModelPCA(mx)
+  modelLabel[[mycount]] <- sprintf("%s (PCA)", models[[mycount]]$modelInfo$label)
+  modelAccuracy[[mycount]] <- max(models[[mycount]]$results$Accuracy)
+  modelKappa[[mycount]] <- max(max(models[[mycount]]$results$Kappa))
+  print(models[[mycount]])
+}
+```
+
+###Compare Accuracy and Kappa values across models
+
+```{r}
+performance <- cbind(modelLabel,modelAccuracy,modelKappa)
+performance
+```
+
+###Display variables for leading model
+The best performing algorithm (RF without PCA) is defined as the leading model for performancy type identification, the table below identifies the components.
+
+```{r}
+RFclassifier <- models[[1]]
+varImp(RFclassifier)
+```
+
+###Show in-sample accuracy
+Set up a confusion matrix to demonstrate perfect in-sample accuracy. Note that out-of-sample accuracy is estimated with the Accuracy column in the original model evaluation.
+```{r}
+myPredict <- data.frame(prediction=predict(RFclassifier, training))
+myPredict$classe<-training$classe
+confusionMatrix(myPredict$prediction, myPredict$classe)
+```
+
+###Apply leading model to the test sample
+This can not be evaluated in text as the true performance type values in the test sample are withheld by design of this task.
+```{r}
+testPrediction=predict(RFclassifier, newdata = testing)
+testPrediction
+```
+
+##Conclusion
+
+Random Forest prediction with the original input variables performs best with perfect in-sample prediction and very high out-of-sample accuracy (0.4% error). This estimate might be too optimistic because it is based on a very small sample of individual participants. The model could include noise from the testing environment or idiosyncrasies of the individual participants, that will reflect in a reduced out-of-sample accuracy as soon as the prediction is applied to a real-life sample. Without domain knowledge, we can't be sure how well these results will generalize
